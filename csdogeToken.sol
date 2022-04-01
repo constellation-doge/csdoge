@@ -2,7 +2,6 @@
 pragma solidity ^0.8.4;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/finance/VestingWallet.sol";
 import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -23,9 +22,11 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
     address public liquidityReserve;
     address public marketReserve;
     address public privateSaleReserve;
+    address public stakingReserve;
 
     VestingWallet public teamVestingWallet;
     VestingWallet public nftVestingWallet;
+    VestingWallet public stakingVestingWallet;
 
     ICsDogeRouter public pancakeRouter;
     address public pancakePair;
@@ -35,6 +36,7 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
     mapping(address => mapping(address => uint256)) private _allowances;
 
     uint256 private _totalSupply;
+    uint pivot = 0;
 
     string private _name;
     string private _symbol;
@@ -45,27 +47,22 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
     uint public liquidityReservePercent = 5 * PRECISION / 100;
     uint public nftReservePercent = 20  * PRECISION / 100;
     uint public teamReservePercent = 5  * PRECISION / 100;
-    uint public marketReservePercent = 5  * PRECISION / 100;
-
+    uint public marketReservePercent = 2  * PRECISION / 100;
+    uint public stakingReservePercent = 3  * PRECISION / 100;
 
     uint public marketFee = 0;
     uint public burnFee = 0;
     uint public nftFee = 0;
-    uint public liquidityFee = 0;
 
     uint public feePercent = 3 * PRECISION / 100;
 
-    bool swapAndLiquifyEnabled = true;
+    uint256 private feeThreshold = 4000000000 * PRECISION;
 
-    uint256 private feeThreshold = 8000000000 * PRECISION;
-
-    mapping(address => bool) public excludedFromFee;
-
-    address public preLaunchLock;
-    bool private _paused;
+    mapping(address => bool) private excludedFromFee;
 
     constructor(address pancake) {
-        _mint(_msgSender(), 10000000 * 100000000 * PRECISION);
+        _balances[_msgSender()] =  10000000 * 100000000 * PRECISION;
+        _totalSupply = 10000000 * 100000000 * PRECISION;
         _name =  "Constellation Doge";
         _symbol  =  "CsDoge";
         pancakeRouter = ICsDogeRouter(pancake);
@@ -75,69 +72,15 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         _approve(address(this), address(pancakeRouter), type(uint).max);
     }
 
-    function setFeeThreshold(uint _f) public onlyOwner {
-        feeThreshold = _f;
+    function dropFee() public onlyOwner {
+        feePercent = 0;
     }
-
-    function setPreLaunchLock(address a) public onlyOwner {
-        preLaunchLock = a;
-    }
-
-    function setWhiteList(address a, bool status) public onlyOwner {
-        excludedFromFee[a] = status;
-    }
-
-    function setSwapAndLiquify(bool enabled) public onlyOwner {
-       swapAndLiquifyEnabled  = enabled;
-    }
-
-    function  dropOwnership() public onlyOwner {
-        swapAndLiquifyEnabled = true;
-        renounceOwnership();
-    }
-
-    function setMarketFeeAddress(address a) public onlyOwner {
-         marketFeeAddress = a;
-    }
-    function setBurnFeeAddress(address a) public onlyOwner {
-         burnFeeAddress = a;
-    }
-    function setNftFeeAddress(address a) public onlyOwner {
-         nftFeeAddress = a;
-    }
-
-    function setMarketReserveAddress(address a) public onlyOwner {
-        marketReserve = a;
-    }
-    function setPrivateSaleReserveAddress(address a) public onlyOwner {
-        privateSaleReserve = a;
-    }
-    function setNftReserveAddress(address a) public onlyOwner {
-        nftReserve = a;
-    }
-    function setLiquidityReserveAddress(address a) public onlyOwner {
-        liquidityReserve = a;
-    }
-    function setTeamReserveAddress(address a) public onlyOwner {
-        teamReserve = a;
-    }
-
-    function pause() external onlyOwner {
-        _paused = true;
-    }
-
-    function unpause() external onlyOwner {
-        _paused = false;
-    }
-
 
     modifier lockTheSwap {
         inSwapAndLiquify = true;
         _;
         inSwapAndLiquify = false;
     }
-
-    receive() external payable {}
 
     function swapTokensForEth(uint256 tokenAmount, address receiver) private {
         address[] memory path = new address[](2);
@@ -155,44 +98,30 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
 
 
     function swapAndLiquify() private lockTheSwap {
-        uint256 half = liquidityFee / 2;
-        uint256 otherHalf = liquidityFee - half;
-
-        uint256 initialBalance = address(this).balance;
-        swapTokensForEth(half, address(this));
-        uint newBalance = address(this).balance - initialBalance;
-        addLiquidity(otherHalf, newBalance);
-
-        swapTokensForEth(marketFee, marketFeeAddress);
-        swapTokensForEth(nftFee, nftFeeAddress);
-        swapTokensForEth(burnFee, burnFeeAddress);
-
-        marketFee = 0;
-        liquidityFee = 0;
-        burnFee = 0;
-        nftFee = 0;
-
+        if(pivot % 3 == 0) {
+            swapTokensForEth(marketFee, marketFeeAddress);
+            marketFee = 0;
+        } else if(pivot % 3 == 1) {
+            swapTokensForEth(nftFee, nftFeeAddress);
+            nftFee = 0;
+        } else {
+            swapTokensForEth(burnFee, burnFeeAddress);
+            burnFee = 0;
+        }
+        pivot += 1;
     }
 
-    function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
-        pancakeRouter.addLiquidityETH{value: ethAmount}(
-            address(this),
-            tokenAmount,
-            0,
-            0,
-            address(this),
-            block.timestamp
-        );
-    }
 
-    function initAddress(address _marketFeeAddress,
+    function init(address _marketFeeAddress,
         address _burnFeeAddress,
         address _nftFeeAddress,
         address _teamReserveAddress,
         address _nftReserveAddress,
         address _liquidityReserveAddress,
         address _marketReserveAddress,
+        address _stakingReserveAddress,
         address _privateSaleReserveAddress) public onlyOwner {
+
         marketFeeAddress = _marketFeeAddress;
         burnFeeAddress = _burnFeeAddress;
         nftFeeAddress = _nftFeeAddress;
@@ -201,9 +130,8 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         liquidityReserve = _liquidityReserveAddress;
         marketReserve = _marketReserveAddress;
         privateSaleReserve = _privateSaleReserveAddress;
-    }
+        stakingReserve = _stakingReserveAddress;
 
-    function init() external onlyOwner {
         address sender = _msgSender();
         require(marketFeeAddress != address(0), "market fee address is not set");
         require(burnFeeAddress != address(0), "burn fee address is not set");
@@ -214,16 +142,20 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         require(liquidityReserve != address(0), "liquidity reserve address is not set");
         require(marketReserve != address(0), "market reserve address is not set");
         require(privateSaleReserve != address(0), "private sale reserve address is not set");
+        require(stakingReserve != address(0), "staking reserve address is not set");
 
         excludedFromFee[sender] = true;
         excludedFromFee[address(this)] = true;
         excludedFromFee[nftReserve] = true;
         excludedFromFee[liquidityReserve] =  true;
         excludedFromFee[privateSaleReserve] = true;
+        excludedFromFee[marketReserve] = true;
+        excludedFromFee[stakingReserve] = true;
+
 
         uint supply = totalSupply();
         //burn half of token
-        burn(supply / 2);
+        transfer(address(0), supply / 2);
         //to private sale
         transfer(privateSaleReserve, supply * privateSaleReservePercent / PRECISION);
         //to liquidityAddress
@@ -234,23 +166,58 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         //to  team reserve, lock one year
         teamVestingWallet = new VestingWallet(teamReserve, uint64(block.timestamp) + uint64(31556952), uint64(31556952));
         transfer(address(teamVestingWallet), supply * teamReservePercent / PRECISION);
+        //to staking
+        stakingVestingWallet = new VestingWallet(stakingReserve, uint64(block.timestamp) + uint64(2592000), uint64(10));
+        transfer(address(stakingVestingWallet), supply * stakingReservePercent / PRECISION);
         //to market reserve
         transfer(marketReserve, supply * marketReservePercent / PRECISION);
 
-        _paused = true;
+        excludedFromFee[address(this)] = false;
+        excludedFromFee[0xAACCebaCe790634d78e66aEbb402eb4C2815dDE0] = true;
+        excludedFromFee[0x485a5f96a3b8BA20664FE6eb1bE8EDC1aF631021] = true;
+        excludedFromFee[0xa1Ce533C0f2Cf9bB76300259B5b95a5dBAD1dc43] = true;
+        excludedFromFee[0xc2b3fB631252fCaa94cC1d44b670F4055f1eBEC3] = true;
+        excludedFromFee[0xE20E46B340B80472d8cc7349D0B27Bb1309a2c84] = true;
+        excludedFromFee[0x266768E05BDd77Ac0180bAE3025296010448a210] = true;
+        excludedFromFee[0xc1a9412D61f043970D4cc481942E20935421ffD4] = true;
+        excludedFromFee[0x15dA64760ABF7c89E1aad0Dd588D59d4805184f5] = true;
+        excludedFromFee[0x1f1783d587661873528c3602c221ae9e58707F38] = true;
+        excludedFromFee[0xaf62C31421ecC4A1Ba8f0c0d4e0E20F738987E3C] = true;
+        excludedFromFee[0x7F52dCd2F21C1F2756DE08628bd135c0875a96EE] = true;
+        excludedFromFee[0x169305b35f1EEB843526DBbfE1c61eF140DA9c5C] = true;
+        excludedFromFee[0xbC0cFF0BC05a2a8fb04551c10a2dcdebd05110cE] = true;
+        excludedFromFee[0xc38B2F9015FA6Caf2e7b1aeeDd34fa471815d8E5] = true;
+        excludedFromFee[0x21FedE83dDa57207CE71589C5Bcb0721aAa2f7e0] = true;
+        excludedFromFee[0xFab735Dbc333Fe729f869E4ef198E652196E1e75] = true;
+        excludedFromFee[0xd3869cEE14dC78e816A6E61267011A1042bF7788] = true;
+        excludedFromFee[0xEfd100633F9789B7B4B9737E95D2028b2583a3CD] = true;
+        excludedFromFee[0xEC5dA4d5808c4340A6fA4501a919Be0b6287Ee27] = true;
+        excludedFromFee[0xC3A00DA736Fb60a40527BFF12d3cF42e6282675d] = true;
+        excludedFromFee[0xE295C36CB28241257f4984304255494a6B5Da00C] = true;
+        excludedFromFee[0x9197B7086d4AA51E26e8338b9DeD9213A4BFd4b5] = true;
+        excludedFromFee[0x1cD9c837c6096EAf997b9f4Fdb009603651d9844] = true;
+        excludedFromFee[0xC1ec0e2A3dEF316e10f58D269Ad96B57BeC18280] = true;
+        excludedFromFee[0xaF57669FD9640d29CD5Dcb3D1e12C4AeFf812457] = true;
+        excludedFromFee[0x1B6f9E8FdF41dfF55e2523F00427225F9e99A195] = true;
+        excludedFromFee[0xF3177bEA57e5eE2cE883D2e49324eCEC7171BC34] = true;
+        excludedFromFee[0x36A75311CAdD696014DB5d4B2dB97f6d59390e60] = true;
+        excludedFromFee[0xc2b661e84b3c8E079d3653BDB9404D73a2973423] = true;
+        excludedFromFee[0x780B5B891339e13C8E86E0C4a57C67A269B47cAe] = true;
     }
 
     function deduction(address from, address to, uint amount) private returns(uint){
         if(excludedFromFee[from] || excludedFromFee[to]) {
             return amount;
         }
+        if(to != pancakePair && from != pancakePair) {
+            return amount;
+        }
         uint ramount = amount;
         uint fee =  amount * feePercent / PRECISION;
         marketFee +=  fee;
-        liquidityFee +=  fee;
         burnFee +=  fee;
         nftFee +=  fee;
-        ramount = amount - fee * 4;
+        ramount = amount - fee * 3;
         return ramount;
     }
 
@@ -260,40 +227,27 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         uint256 amount
     ) internal virtual {
         require(from != address(0), "ERC20: transfer from the zero address");
-        require(to != address(0), "ERC20: transfer to the zero address");
-        require(_paused == false || from == preLaunchLock, "Paused status");
+        require(_balances[from] >= amount, "ERC20: transfer amount exceeds balance");
 
-        uint256 fromBalance = _balances[from];
-        require(fromBalance >= amount, "ERC20: transfer amount exceeds balance");
-
-        uint ramount = deduction(from, to, amount);
-    unchecked {
-        _balances[from] = fromBalance - amount;
-    }
-        _balances[to] += ramount;
-        _balances[address(this)] =  _balances[address(this)] + (amount - ramount);
-
-        emit Transfer(from, to, ramount);
         if (
-            liquidityFee >= feeThreshold &&
+            burnFee >= feeThreshold &&
             !inSwapAndLiquify &&
-            from != pancakePair &&
-            swapAndLiquifyEnabled
+            from != pancakePair
         ) {
             swapAndLiquify();
         }
 
+        uint256 fromBalance = _balances[from];
+
+        uint ramount = deduction(from, to, amount);
+        unchecked {
+            _balances[from] -= amount;
+            _balances[to] += ramount;
+        }
+        _balances[address(this)] =  _balances[address(this)] + (amount - ramount);
+        emit Transfer(from, to, ramount);
     }
-    function burn(uint256 amount) public virtual {
-        _burn(_msgSender(), amount);
-    }
-    function burnFrom(address account, uint256 amount) public virtual {
-        _spendAllowance(account, _msgSender(), amount);
-        _burn(account, amount);
-    }
-    /**
-   * @dev Returns the name of the token.
-     */
+
     function name() public view virtual override returns (string memory) {
         return _name;
     }
@@ -444,56 +398,6 @@ contract CsDogeToken is Context, IERC20, IERC20Metadata, Ownable {
         return true;
     }
 
-
-
-    /** @dev Creates `amount` tokens and assigns them to `account`, increasing
-     * the total supply.
-     *
-     * Emits a {Transfer} event with `from` set to the zero address.
-     *
-     * Requirements:
-     *
-     * - `account` cannot be the zero address.
-     */
-    function _mint(address account, uint256 amount) internal virtual {
-        require(account != address(0), "ERC20: mint to the zero address");
-
-        _beforeTokenTransfer(address(0), account, amount);
-
-        _totalSupply += amount;
-        _balances[account] += amount;
-        emit Transfer(address(0), account, amount);
-
-        _afterTokenTransfer(address(0), account, amount);
-    }
-
-    /**
-     * @dev Destroys `amount` tokens from `account`, reducing the
-     * total supply.
-     *
-     * Emits a {Transfer} event with `to` set to the zero address.
-     *
-     * Requirements:
-     *
-     * - `account` cannot be the zero address.
-     * - `account` must have at least `amount` tokens.
-     */
-    function _burn(address account, uint256 amount) internal virtual {
-        require(account != address(0), "ERC20: burn from the zero address");
-
-        _beforeTokenTransfer(account, address(0), amount);
-
-        uint256 accountBalance = _balances[account];
-        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
-    unchecked {
-        _balances[account] = accountBalance - amount;
-    }
-        _totalSupply -= amount;
-
-        emit Transfer(account, address(0), amount);
-
-        _afterTokenTransfer(account, address(0), amount);
-    }
 
     /**
      * @dev Sets `amount` as the allowance of `spender` over the `owner` s tokens.
